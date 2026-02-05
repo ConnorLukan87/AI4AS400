@@ -10,11 +10,37 @@ Tensor2D matmul(const Tensor2D& A, const Tensor2D& B) {
   if (k != B.size()) throw std::invalid_argument("Matrix dimensions mismatch");
   Tensor2D C(m, Tensor1D(n, 0.0f));
 #ifdef USE_IBM_XL
-  // Use IBM XL MMA built-in functions for acceleration
-  // Example placeholder - implement tiling with __mma_xvf32gerpp etc.
-  // Require Power10 and compiler support. For general sizes, tile into 4x4 blocks.
-  // Note: This requires including appropriate headers like <vecintrin.h> or similar.
-  // For simplicity, fall back to standard if not fully implemented.
+  const int BLOCK_SIZE = 4;
+  for (int row_block = 0; row_block < (m + BLOCK_SIZE - 1) / BLOCK_SIZE; ++row_block) {
+    int row_start = row_block * BLOCK_SIZE;
+    int num_rows = std::min(BLOCK_SIZE, m - row_start);
+    unsigned char row_mask = static_cast<unsigned char>(((1U << num_rows) - 1) << (BLOCK_SIZE - num_rows));
+    for (int col_block = 0; col_block < (n + BLOCK_SIZE - 1) / BLOCK_SIZE; ++col_block) {
+      int col_start = col_block * BLOCK_SIZE;
+      int num_cols = std::min(BLOCK_SIZE, n - col_start);
+      unsigned char col_mask = static_cast<unsigned char>(((1U << num_cols) - 1) << (BLOCK_SIZE - num_cols));
+      __vector_quad acc;
+      __builtin_mma_xxsetaccz(&acc);
+      for (int p = 0; p < k; ++p) {
+        vector float X = vec_splats(0.0f);
+        for (int r = 0; r < num_rows; ++r) {
+          X = vec_insert(A[row_start + r][p], X, r);
+        }
+        vector float Y = vec_splats(0.0f);
+        for (int c = 0; c < num_cols; ++c) {
+          Y = vec_insert(B[p][col_start + c], Y, c);
+        }
+        __builtin_mma_pmxvf32gerpp(&acc, X, Y, row_mask, col_mask);
+      }
+      vector float vec_C[4];
+      __builtin_mma_disassemble_acc(vec_C, &acc);
+      for (int r = 0; r < num_rows; ++r) {
+        for (int c = 0; c < num_cols; ++c) {
+          C[row_start + r][col_start + c] += vec_extract(vec_C[r], c);
+        }
+      }
+    }
+  }
 #else
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < n; ++j) {
@@ -33,7 +59,29 @@ Tensor1D matvec(const Tensor2D& A, const Tensor1D& x) {
   if (k != x.size()) throw std::invalid_argument("Dimensions mismatch");
   Tensor1D y(m, 0.0f);
 #ifdef USE_IBM_XL
-  // Similar placeholder for IBM XL MMA acceleration
+  const int BLOCK_SIZE = 4;
+  unsigned char col_mask = 0x8; // 1000b, updates only the first column
+  for (int row_block = 0; row_block < (m + BLOCK_SIZE - 1) / BLOCK_SIZE; ++row_block) {
+    int row_start = row_block * BLOCK_SIZE;
+    int num_rows = std::min(BLOCK_SIZE, m - row_start);
+    unsigned char row_mask = static_cast<unsigned char>(((1U << num_rows) - 1) << (BLOCK_SIZE - num_rows));
+    __vector_quad acc;
+    __builtin_mma_xxsetaccz(&acc);
+    for (int p = 0; p < k; ++p) {
+      vector float X = vec_splats(0.0f);
+      for (int r = 0; r < num_rows; ++r) {
+        X = vec_insert(A[row_start + r][p], X, r);
+      }
+      vector float Y = vec_splats(0.0f);
+      Y = vec_insert(x[p], Y, 0);
+      __builtin_mma_pmxvf32gerpp(&acc, X, Y, row_mask, col_mask);
+    }
+    vector float vec_C[4];
+    __builtin_mma_disassemble_acc(vec_C, &acc);
+    for (int r = 0; r < num_rows; ++r) {
+      y[row_start + r] += vec_extract(vec_C[r], 0);
+    }
+  }
 #else
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < k; ++j) {
@@ -141,11 +189,8 @@ void DenseLayer::compute_deltas1D(const Tensor1D& grad_output, const Tensor1D& z
   deltas.resize(output_size);
 
   for (int i = 0; i < output_size; ++i) {
-
     deltas[i] = grad_output[i] * deriv(z_val[i]);
-
   }
-
 }
 
 Tensor1D DenseLayer::get_grad_input1D() {
@@ -495,11 +540,8 @@ void ConvLayer::update_params3D(const Tensor3D& prev_input, float lr, int t, flo
   }
 
   for (int oc = 0; oc < out_channels; ++oc) {
-
     for (int ic = 0; ic < in_channels; ++ic) {
-
       for (int kh = 0; kh < kernel_size; ++kh) {
-
         for (int kw = 0; kw < kernel_size; ++kw) {
 
           float g = grad_weights[oc][ic][kh][kw];
@@ -521,15 +563,10 @@ void ConvLayer::update_params3D(const Tensor3D& prev_input, float lr, int t, flo
     }
 
     float g = grad_biases[oc];
-
     m_biases[oc] = beta1 * m_biases[oc] + (1 - beta1) * g;
-
     v_biases[oc] = beta2 * v_biases[oc] + (1 - beta2) * g * g;
-
     float m_hat = m_biases[oc] / (1 - std::pow(beta1, t));
-
     float v_hat = v_biases[oc] / (1 - std::pow(beta2, t));
-
     biases[oc] -= lr * m_hat / (std::sqrt(v_hat) + epsilon);
 
   }
@@ -547,9 +584,7 @@ void ConvLayer::save(std::ostream& os) const {
   os << in_channels << " " << out_channels << " " << kernel_size << " " << stride << " " << static_cast<int>(activation_type) << "\n";
 
   for (const auto& oc : weights) {
-
     for (const auto& ic : oc) {
-
       for (const auto& row : ic) {
 
         for (float w : row) os << w << " ";
@@ -557,9 +592,7 @@ void ConvLayer::save(std::ostream& os) const {
         os << "\n";
 
       }
-
     }
-
   }
 
   for (float b : biases) os << b << " ";

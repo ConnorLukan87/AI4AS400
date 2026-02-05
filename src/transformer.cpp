@@ -541,7 +541,7 @@ Tensor1D MultiHeadAttention::forward_cached(const Tensor1D& x, int pos) {
 
   // Concat
 
-  Tensor1D attn(embed_dim, 0.0f));
+  Tensor1D attn(embed_dim, 0.0f);
 
   for (int h = 0; h < num_heads; ++h) {
 
