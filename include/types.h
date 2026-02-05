@@ -1,5 +1,6 @@
 #ifndef TYPES_H
 #define TYPES_H
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
 namespace nn {
 static bool random_seeded = false;
 inline float sigmoid(float x) {
