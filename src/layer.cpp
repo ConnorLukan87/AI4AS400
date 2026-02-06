@@ -1,6 +1,7 @@
 // layer.cpp
 #include "layer.h"
 #include <altivec.h>
+
 namespace nn {
 
 Tensor2D matmul(const Tensor2D& A, const Tensor2D& B) {
@@ -1733,3 +1734,4 @@ LayerType LSTMLayer::get_layer_type() const { return LayerType::LSTM; }
 
 
 } // namespace nn
+
